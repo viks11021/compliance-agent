@@ -1,0 +1,20 @@
+name: CI
+
+# Runs unit tests only (mocked objects, no GCP credentials needed/used).
+# This deliberately does NOT run scripts/live_smoke_test.py — that needs a
+# real GCP project + Vertex AI access and is meant to be run by hand.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/ -v --cov=gcp_live_compliance
