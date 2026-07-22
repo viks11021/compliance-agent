@@ -10,6 +10,13 @@
 
 locals {
   job_name = "compliance-agent-scan"
+  # Secret Manager rejects a zero-length payload (a real error hit while
+  # deploying this, not a hypothetical) — an unset webhook needs a
+  # non-empty placeholder, not "". The CLI's --notify-slack will still
+  # attempt to POST to this and fail gracefully (caught, logged, doesn't
+  # fail the job) rather than silently skip, but that's a minor cosmetic
+  # gap, not a functional one.
+  slack_webhook_value = var.slack_webhook_url != "" ? var.slack_webhook_url : "not-configured"
 }
 
 # --- APIs ---------------------------------------------------------------
@@ -23,6 +30,8 @@ resource "google_project_service" "required" {
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
     "artifactregistry.googleapis.com",
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -47,6 +56,8 @@ resource "google_artifact_registry_repository" "scanner" {
 resource "google_service_account" "scanner" {
   account_id   = "compliance-agent-scanner"
   display_name = "gcp-live-compliance-agent runtime identity"
+
+  depends_on = [google_project_service.required]
 }
 
 resource "google_project_iam_member" "scanner_viewer" {
@@ -83,7 +94,7 @@ resource "google_secret_manager_secret" "slack_webhook" {
 
 resource "google_secret_manager_secret_version" "slack_webhook" {
   secret      = google_secret_manager_secret.slack_webhook.id
-  secret_data = var.slack_webhook_url
+  secret_data = local.slack_webhook_value
 }
 
 resource "google_secret_manager_secret_iam_member" "scanner_secret_access" {
@@ -143,6 +154,8 @@ resource "google_cloud_run_v2_job" "scanner" {
 resource "google_service_account" "scheduler_invoker" {
   account_id   = "compliance-agent-invoker"
   display_name = "Cloud Scheduler -> Cloud Run Job invoker for gcp-live-compliance-agent"
+
+  depends_on = [google_project_service.required]
 }
 
 resource "google_cloud_run_v2_job_iam_member" "scheduler_can_invoke" {
