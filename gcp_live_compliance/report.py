@@ -12,8 +12,12 @@ def to_console(result: ScanResult) -> str:
     lines = [f"GCP Live Compliance Scan — project: {result.project_id}", ""]
 
     if not result.findings:
-        lines.append("No issues found across IAM and firewall checks. ✅")
+        lines.append("No issues found. ✅")
     else:
+        source = result.findings[0].source
+        source_label = "Gemini (AI-detected)" if source == "ai" else "deterministic rule engine"
+        lines.append(f"Detection: {source_label}")
+
         counts = {s: 0 for s in SEVERITY_ORDER}
         for f in result.findings:
             counts[f.severity] += 1

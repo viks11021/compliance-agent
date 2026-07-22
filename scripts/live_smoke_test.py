@@ -62,13 +62,22 @@ def main():
         print("Check: Compute Engine API enabled? Caller has compute.firewalls.list?")
         sys.exit(1)
 
-    step("4. Rule evaluation")
-    from gcp_live_compliance.rules import iam_rules, network_rules
+    step("4. Gemini-based detection (ai_detector.py — the default mode)")
+    try:
+        from gcp_live_compliance.ai_detector import detect
 
-    findings = iam_rules.evaluate(iam_snapshot) + network_rules.evaluate(fw_rules)
-    print(f"OK — {len(findings)} finding(s) from real project data.")
+        findings = detect(iam_snapshot, fw_rules, project_id)
+        print(f"OK — Gemini identified {len(findings)} finding(s) directly from the live data.")
+        for f in findings[:3]:
+            print(f"  [{f.severity.value}] {f.rule_id}: {f.message}")
+    except Exception as exc:
+        print(f"FAILED: {exc}")
+        print("Check: Vertex AI API enabled? Model name in ai_detector.py still valid? "
+              "Caller has aiplatform access? Did Gemini's response fail to parse as JSON "
+              "(see the ValueError text above)?")
+        sys.exit(1)
 
-    step("5. Vertex AI / Gemini explanation")
+    step("5. Narrative summary (vertex_explainer.py — used by --explain)")
     try:
         from gcp_live_compliance.vertex_explainer import explain
 
@@ -77,11 +86,10 @@ def main():
         print(summary)
     except Exception as exc:
         print(f"FAILED: {exc}")
-        print("Check: Vertex AI API enabled? Model name in vertex_explainer.py still valid? "
-              "Caller has aiplatform.endpoints.predict or equivalent?")
         sys.exit(1)
 
-    print("\nAll layers confirmed against a live project. Safe to demo.")
+    print("\nAll layers confirmed against a live project, including Gemini making the")
+    print("actual compliance judgment call. Safe to demo.")
 
 
 if __name__ == "__main__":

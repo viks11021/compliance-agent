@@ -21,6 +21,7 @@ class Finding:
     message: str
     recommendation: str
     raw: dict = field(default_factory=dict)  # original API object, for --explain / debugging
+    source: str = "rules"        # "rules" (deterministic) or "ai" (Gemini-detected)
 
     def to_dict(self) -> dict:
         return {
@@ -30,4 +31,5 @@ class Finding:
             "resource_name": self.resource_name,
             "message": self.message,
             "recommendation": self.recommendation,
+            "source": self.source,
         }
