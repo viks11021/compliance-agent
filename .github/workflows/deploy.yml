@@ -1,0 +1,121 @@
+name: Deploy compliance-agent
+
+# GitOps pattern: pull requests touching deploy/terraform, the Dockerfile,
+# or the package get a `terraform plan` posted as a PR comment (visible,
+# reviewable, nothing applied). Merges to main run `terraform apply` for
+# real. workflow_dispatch lets you trigger a deploy by hand without a code
+# change (e.g. to pick up a rotated Slack webhook secret).
+#
+# NOT RUN: this workflow has not executed on a real GitHub Actions runner
+# from the sandbox this was written in (no way to trigger or observe a
+# GitHub Actions run from here). Written against the current documented
+# usage of google-github-actions/auth, hashicorp/setup-terraform, and
+# actions/github-script — but this is the one piece of the whole project
+# that has had zero live verification, not even the "runs but fails
+# honestly" kind the rest of this repo got. Treat the first real run as
+# the actual test, and expect to iterate — see
+# deploy/github-actions-setup.md for the one-time bootstrap this depends
+# on.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/terraform/**"
+      - "Dockerfile"
+      - "gcp_live_compliance/**"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/terraform/**"
+      - "Dockerfile"
+      - "gcp_live_compliance/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write      # required for Workload Identity Federation — this is what removes the need for a static key
+  pull-requests: write  # to post the terraform plan as a PR comment
+
+env:
+  PROJECT_ID: cloudpolicy-ai-demo
+  REGION: us-central1
+  IMAGE_REPO: us-central1-docker.pkg.dev/cloudpolicy-ai-demo/compliance-agent/scanner
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        # Tagged with the commit SHA, not "latest" — Cloud Run Jobs cache
+        # by digest, and an immutable tag means you always know exactly
+        # which commit a given scan ran against.
+        run: echo "image=${{ env.IMAGE_REPO }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - run: |
+          docker build -t ${{ steps.tag.outputs.image }} .
+          docker push ${{ steps.tag.outputs.image }}
+
+  terraform:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9"
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+
+      - run: terraform init -backend-config=backend.hcl
+
+      - name: Terraform plan
+        id: plan
+        run: |
+          terraform plan -no-color \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="image=${{ needs.build-and-push.outputs.image }}" \
+            -out=tfplan
+        env:
+          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+            const plan = execSync('terraform show -no-color tfplan', { cwd: 'deploy/terraform' }).toString();
+            const truncated = plan.length > 60000 ? plan.slice(0, 60000) + '\n... (truncated)' : plan;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `#### Terraform Plan\n\`\`\`\n${truncated}\n\`\`\``,
+            });
+
+      - name: Terraform apply
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: terraform apply -auto-approve tfplan
