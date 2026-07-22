@@ -111,6 +111,8 @@ gcp-live-compliance scan --project YOUR_PROJECT_ID --rules-only --format json --
 |----------|-----------------------------------------|
 | IAM      | Public bindings (`allUsers` / `allAuthenticatedUsers`), primitive roles (Owner/Editor/Viewer) bound to non-service-account principals |
 | Firewall | Sensitive ports (SSH/RDP/common DB ports) or allow-all protocol rules open to `0.0.0.0/0` on ingress |
+| Storage  | Bucket-level public IAM bindings; distinguishes "public and exploitable" (CRITICAL) from "public binding present but Public Access Prevention enforced" (LOW — dead weight, not currently exploitable). Does not check individual object-level ACLs. |
+| Resource hierarchy | IAM bindings inherited from a folder or organization above the project — a project can look locked-down on its own while inheriting `roles/editor` from a folder two levels up. **Best-effort by design**: the scanner service account only has project-level access; reading folder/org policy needs a separate, manually-granted role (see "Required IAM permissions"). Where that's missing, this shows up as its own LOW finding ("couldn't verify inherited IAM") rather than a false all-clear. |
 
 In Gemini mode this is a non-exhaustive starting instruction, not a fixed
 list — the model can flag other patterns in the same data too. In
@@ -120,7 +122,9 @@ list — the model can flag other patterns in the same data too. In
 
 ```
                  collectors/iam.py  ──┐
-(live GCP APIs)  collectors/network.py┤
+                 collectors/network.py┤
+(live GCP APIs)  collectors/storage.py┤
+                 collectors/hierarchy.py┤
                                        │
                                        ├─→ ai_detector.py (default: Gemini decides findings)
                                        │       — or, with --rules-only —
@@ -153,18 +157,33 @@ it.
 At minimum, the ADC principal needs:
 - `resourcemanager.projects.getIamPolicy`
 - `compute.firewalls.list`
+- `storage.buckets.list` and `storage.buckets.getIamPolicy`
+- `resourcemanager.projects.get` (to walk the ancestor chain)
 
-These are included in the predefined `roles/viewer` role. The default
-(Gemini) detection mode and `--explain` additionally need Vertex AI access
-(e.g. `roles/aiplatform.user`) and the Vertex AI API enabled on the
+All of the above are included in the predefined `roles/viewer` role. The
+default (Gemini) detection mode and `--explain` additionally need Vertex AI
+access (e.g. `roles/aiplatform.user`) and the Vertex AI API enabled on the
 project. `--rules-only` needs neither.
+
+**Folder/org-level checks are separate and optional.** By design, the
+scanner service account this project provisions only has project-scoped
+`roles/viewer` — it can't read folder or organization IAM policy, and
+Terraform can't grant itself org-level permissions from a project-scoped
+deployment anyway. If you want full inherited-IAM visibility, an org admin
+needs to separately grant the scanner service account
+`roles/resourcemanager.folderViewer` and/or
+`roles/resourcemanager.organizationViewer` at the relevant level. Without
+that, the hierarchy check still runs and still reports honestly — it just
+reports "couldn't verify" as its own LOW finding rather than silently
+skipping it.
 
 ## Roadmap / not yet covered
 
-- Cloud Storage bucket ACLs/IAM (public buckets)
+- Cloud Storage: only bucket-level IAM is checked, not individual
+  object-level ACLs
 - Cloud SQL public IP / backup config
-- Cross-project / org-level policy inheritance (this only reads the
-  project's own policy, not inherited folder/org bindings)
+- Cross-project IAM policy inheritance (this only reads the ancestor
+  chain of the project being scanned, not sibling projects)
 - Egress firewall rules (only ingress is evaluated today)
 
 ## Development

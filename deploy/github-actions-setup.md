@@ -94,6 +94,19 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:gha-deployer@${PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/resourcemanager.projectIamAdmin"
 
+# roles/editor deliberately excludes IAM policy-setting permissions on
+# some services (Secret Manager, Cloud Run among them) — a real gap hit
+# while deploying this, not a hypothetical. Without these, Terraform can
+# create the secret and the Cloud Run Job but can't grant the scanner SA
+# access to the secret, or let the scheduler SA invoke the job:
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:gha-deployer@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.admin"
+
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:gha-deployer@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/run.admin"
+
 # And needs to read/write the state bucket from Step 0:
 gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}-tfstate" \
   --member="serviceAccount:gha-deployer@${PROJECT_ID}.iam.gserviceaccount.com" \

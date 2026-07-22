@@ -33,8 +33,10 @@ from __future__ import annotations
 import json
 import re
 
+from .collectors.hierarchy import HierarchySnapshot
 from .collectors.iam import IamPolicySnapshot
 from .collectors.network import FirewallRuleSnapshot
+from .collectors.storage import BucketSnapshot
 from .models import Finding, Severity
 
 DEFAULT_LOCATION = "us-central1"
@@ -49,8 +51,8 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 _JSON_SCHEMA_INSTRUCTIONS = """Respond with ONLY a JSON array (no prose, no markdown code fences). Each element must be an object with exactly these keys:
   "rule_id": a short UPPER_SNAKE_CASE identifier you choose, e.g. "IAM_PUBLIC_BINDING"
   "severity": one of "CRITICAL", "HIGH", "MEDIUM", "LOW"
-  "resource_type": "iam_policy" or "firewall_rule"
-  "resource_name": the specific role, member, or firewall rule name this finding is about
+  "resource_type": "iam_policy", "firewall_rule", "storage_bucket", or "resource_hierarchy"
+  "resource_name": the specific role, member, firewall rule, bucket, or folder/org name this finding is about
   "message": one sentence describing the issue in plain English
   "recommendation": one sentence describing the fix
 If you find nothing wrong, respond with an empty JSON array: []
@@ -58,11 +60,16 @@ If you find nothing wrong, respond with an empty JSON array: []
 
 
 def build_prompt(
-    iam_snapshot: IamPolicySnapshot, firewall_rules: list[FirewallRuleSnapshot]
+    iam_snapshot: IamPolicySnapshot,
+    firewall_rules: list[FirewallRuleSnapshot],
+    buckets: list[BucketSnapshot] | None = None,
+    hierarchy: HierarchySnapshot | None = None,
 ) -> str:
     """Build the prompt that hands Gemini the raw live data and asks it to
     do the actual compliance analysis. Pure function — no API calls, fully
-    unit-testable."""
+    unit-testable. `buckets` and `hierarchy` are optional so existing
+    callers (and existing tests) that only pass IAM/firewall data keep
+    working unchanged."""
     iam_payload = [{"role": b.role, "members": b.members} for b in iam_snapshot.bindings]
     fw_payload = [
         {
@@ -76,20 +83,55 @@ def build_prompt(
         for r in firewall_rules
     ]
 
-    return (
-        "You are a GCP cloud security compliance reviewer. Analyse the live IAM "
-        f"policy and VPC firewall configuration below for project "
-        f"'{iam_snapshot.project_id}' and identify genuine compliance/security "
-        "issues yourself — for example (but not limited to) public IAM bindings "
-        "(allUsers/allAuthenticatedUsers), overly broad primitive roles "
-        "(Owner/Editor) bound to real users rather than service accounts, and "
-        "firewall rules exposing sensitive ports or all traffic to 0.0.0.0/0. "
-        "Only report on resources that actually appear in the data below — do "
-        "not invent resource names.\n\n"
-        f"IAM_POLICY_BINDINGS:\n{json.dumps(iam_payload, indent=2)}\n\n"
-        f"FIREWALL_RULES:\n{json.dumps(fw_payload, indent=2)}\n\n"
-        f"{_JSON_SCHEMA_INSTRUCTIONS}"
-    )
+    sections = [
+        "You are a GCP cloud security compliance reviewer. Analyse the live "
+        f"resource data below for project '{iam_snapshot.project_id}' and "
+        "identify genuine compliance/security issues yourself — for example "
+        "(but not limited to) public IAM bindings (allUsers/"
+        "allAuthenticatedUsers), overly broad primitive roles (Owner/Editor) "
+        "bound to real users rather than service accounts, firewall rules "
+        "exposing sensitive ports or all traffic to 0.0.0.0/0, publicly "
+        "accessible storage buckets, and IAM bindings inherited from a "
+        "folder or organization that grant more than the project itself "
+        "does. Only report on resources that actually appear in the data "
+        "below — do not invent resource names.",
+        "",
+        f"IAM_POLICY_BINDINGS:\n{json.dumps(iam_payload, indent=2)}",
+        "",
+        f"FIREWALL_RULES:\n{json.dumps(fw_payload, indent=2)}",
+    ]
+
+    if buckets:
+        bucket_payload = [
+            {
+                "name": b.name,
+                "bindings": b.bindings,
+                "public_access_prevention": b.public_access_prevention,
+            }
+            for b in buckets
+        ]
+        sections += ["", f"STORAGE_BUCKETS:\n{json.dumps(bucket_payload, indent=2)}"]
+
+    if hierarchy and hierarchy.ancestors:
+        hierarchy_payload = [
+            {
+                "resource_name": a.resource_name,
+                "resource_type": a.resource_type,
+                "bindings": a.bindings,
+                "error": a.error,
+            }
+            for a in hierarchy.ancestors
+        ]
+        sections += [
+            "",
+            f"INHERITED_HIERARCHY_POLICIES (folder/org level; an 'error' field "
+            f"means this scan could not read that level's policy — treat that "
+            f"as a LOW-severity finding about limited visibility, not as a "
+            f"clean bill of health):\n{json.dumps(hierarchy_payload, indent=2)}",
+        ]
+
+    sections += ["", _JSON_SCHEMA_INSTRUCTIONS]
+    return "\n".join(sections)
 
 
 def parse_response(raw_text: str) -> list[Finding]:
@@ -137,6 +179,8 @@ def detect(
     iam_snapshot: IamPolicySnapshot,
     firewall_rules: list[FirewallRuleSnapshot],
     project_id: str,
+    buckets: list[BucketSnapshot] | None = None,
+    hierarchy: HierarchySnapshot | None = None,
     location: str = DEFAULT_LOCATION,
     model_name: str = DEFAULT_MODEL,
 ) -> list[Finding]:
@@ -157,6 +201,6 @@ def detect(
 
     client = genai.Client(vertexai=True, project=project_id, location=location)
 
-    prompt = build_prompt(iam_snapshot, firewall_rules)
+    prompt = build_prompt(iam_snapshot, firewall_rules, buckets=buckets, hierarchy=hierarchy)
     response = client.models.generate_content(model=model_name, contents=prompt)
     return parse_response(response.text)

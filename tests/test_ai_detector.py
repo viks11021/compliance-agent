@@ -6,8 +6,10 @@ for how to check it against a real project."""
 import pytest
 
 from gcp_live_compliance.ai_detector import build_prompt, parse_response
+from gcp_live_compliance.collectors.hierarchy import AncestorPolicy, HierarchySnapshot
 from gcp_live_compliance.collectors.iam import IamBinding, IamPolicySnapshot
 from gcp_live_compliance.collectors.network import FirewallRuleSnapshot
+from gcp_live_compliance.collectors.storage import BucketSnapshot
 from gcp_live_compliance.models import Severity
 
 
@@ -28,6 +30,49 @@ def test_build_prompt_includes_project_and_data():
     assert "roles/owner" in prompt
     assert "fw-allow-ssh" in prompt
     assert "JSON array" in prompt
+
+
+def test_build_prompt_includes_bucket_data_when_provided():
+    iam_snapshot = IamPolicySnapshot(project_id="demo-project", bindings=[])
+    bucket = BucketSnapshot(
+        name="my-public-bucket",
+        bindings=[{"role": "roles/storage.objectViewer", "members": ["allUsers"]}],
+        public_access_prevention=None,
+    )
+    prompt = build_prompt(iam_snapshot, [], buckets=[bucket])
+    assert "my-public-bucket" in prompt
+    assert "STORAGE_BUCKETS" in prompt
+
+
+def test_build_prompt_omits_bucket_section_when_not_provided():
+    iam_snapshot = IamPolicySnapshot(project_id="demo-project", bindings=[])
+    prompt = build_prompt(iam_snapshot, [])
+    assert "STORAGE_BUCKETS" not in prompt
+
+
+def test_build_prompt_includes_hierarchy_data_when_provided():
+    iam_snapshot = IamPolicySnapshot(project_id="demo-project", bindings=[])
+    hierarchy = HierarchySnapshot(
+        project_id="demo-project",
+        has_organization=True,
+        ancestors=[
+            AncestorPolicy(
+                resource_name="organizations/123",
+                resource_type="organization",
+                bindings=[{"role": "roles/owner", "members": ["allUsers"]}],
+            )
+        ],
+    )
+    prompt = build_prompt(iam_snapshot, [], hierarchy=hierarchy)
+    assert "organizations/123" in prompt
+    assert "INHERITED_HIERARCHY_POLICIES" in prompt
+
+
+def test_build_prompt_omits_hierarchy_section_when_no_ancestors():
+    iam_snapshot = IamPolicySnapshot(project_id="demo-project", bindings=[])
+    hierarchy = HierarchySnapshot(project_id="demo-project", has_organization=False, ancestors=[])
+    prompt = build_prompt(iam_snapshot, [], hierarchy=hierarchy)
+    assert "INHERITED_HIERARCHY_POLICIES" not in prompt
 
 
 def test_parse_response_valid_json():

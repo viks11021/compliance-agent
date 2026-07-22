@@ -32,6 +32,8 @@ resource "google_project_service" "required" {
     "artifactregistry.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "monitoring.googleapis.com",
+    "storage.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -117,7 +119,7 @@ resource "google_cloud_run_v2_job" "scanner" {
     template {
       service_account = google_service_account.scanner.email
       timeout         = "600s" # Gemini calls + two GCP API calls should comfortably fit; raise if you add more collectors
-      max_retries     = 0      # A CRITICAL finding is a legitimate result, not a transient failure — retrying just re-runs Gemini 3 extra times for the same answer.
+      max_retries     = 0      # A CRITICAL finding is a legitimate result, not a transient failure — retrying just re-runs Gemini 3 extra times for the same answer. This defaults to 3 if unset; a real run surfaced exactly that (4 executions in 6 minutes for one logical scan).
 
       containers {
         image = var.image

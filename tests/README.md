@@ -3,11 +3,13 @@
 All tests in this directory are **unit tests against hand-built objects**.
 None of them call a real GCP API or a real Vertex AI endpoint. Specifically:
 
-- `test_iam_rules.py` / `test_network_rules.py` construct
-  `IamPolicySnapshot` / `FirewallRuleSnapshot` objects directly in the test
-  and check the rule functions' output. They prove the *rule logic* is
-  correct; they say nothing about whether `collectors/iam.py` or
-  `collectors/network.py` correctly call the real Google APIs, because
+- `test_iam_rules.py` / `test_network_rules.py` / `test_storage_rules.py` /
+  `test_hierarchy_rules.py` construct `IamPolicySnapshot` /
+  `FirewallRuleSnapshot` / `BucketSnapshot` / `HierarchySnapshot` objects
+  directly in the test and check the rule functions' output. They prove
+  the *rule logic* is correct; they say nothing about whether
+  `collectors/iam.py`, `collectors/network.py`, `collectors/storage.py`, or
+  `collectors/hierarchy.py` correctly call the real Google APIs, because
   those collectors are never invoked here.
 - `test_ai_detector.py` tests `build_prompt()` (does the prompt actually
   contain the live data?) and `parse_response()` (does a JSON string from
