@@ -188,3 +188,65 @@ resource "google_cloud_scheduler_job" "nightly_scan" {
     google_cloud_run_v2_job_iam_member.scheduler_can_invoke,
   ]
 }
+
+# --- Email alerting on job failure -----------------------------------------
+# Optional (skipped entirely if alert_email is ""). A "failed" execution
+# here means either a genuine technical break OR a legitimate CRITICAL/HIGH
+# finding — the CLI's --fail-on flag makes those exit non-zero on purpose.
+# Check the execution's logs to tell which; the alert's own description
+# links straight there.
+#
+# UNVERIFIED: the metric filter below (run.googleapis.com/job/completed_execution_count,
+# result="failed") is written against Google's documented Cloud Run Jobs
+# monitoring metrics, but has not been confirmed against a live alert firing
+# from the sandbox this was written in. If it doesn't fire on a real job
+# failure, check Cloud Monitoring's Metrics Explorer for the exact current
+# metric/label names under resource type "Cloud Run Job" and adjust the
+# filter accordingly — same category of caveat as everything else
+# unverified in this repo.
+
+resource "google_monitoring_notification_channel" "email" {
+  count        = var.alert_email != "" ? 1 : 0
+  display_name = "compliance-agent email alerts"
+  type         = "email"
+
+  labels = {
+    email_address = var.alert_email
+  }
+}
+
+resource "google_monitoring_alert_policy" "job_failure" {
+  count        = var.alert_email != "" ? 1 : 0
+  display_name = "compliance-agent-scan execution failed"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Cloud Run Job execution failed"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type=\"cloud_run_job\"",
+        "resource.labels.job_name=\"${local.job_name}\"",
+        "metric.type=\"run.googleapis.com/job/completed_execution_count\"",
+        "metric.labels.result=\"failed\"",
+      ])
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_COUNT"
+      }
+    }
+  }
+
+  notification_channels = [google_monitoring_notification_channel.email[0].id]
+
+  documentation {
+    content   = "The compliance-agent-scan Cloud Run Job reported a failed execution. This means either a technical failure or a CRITICAL/HIGH compliance finding (the CLI exits non-zero on purpose in that case via --fail-on). Check the execution's logs to tell which: https://console.cloud.google.com/run/jobs/executions?project=${var.project_id}"
+    mime_type = "text/markdown"
+  }
+
+  depends_on = [google_project_service.required]
+}

@@ -32,3 +32,9 @@ variable "slack_webhook_url" {
   sensitive   = true
   default     = ""
 }
+
+variable "alert_email" {
+  description = "Email address to notify when the scan job's execution fails (includes CRITICAL/HIGH findings, since --fail-on makes those exit non-zero on purpose). Uses Cloud Monitoring's own email notification channel — no external account or SMTP setup needed. Leave empty to skip email alerting."
+  type        = string
+  default     = ""
+}

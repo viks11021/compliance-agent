@@ -107,6 +107,7 @@ jobs:
           terraform plan -no-color \
             -var="project_id=${{ env.PROJECT_ID }}" \
             -var="image=${{ needs.build-and-push.outputs.image }}" \
+            -var="alert_email=${{ vars.ALERT_EMAIL }}" \
             -out=tfplan
         env:
           TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
