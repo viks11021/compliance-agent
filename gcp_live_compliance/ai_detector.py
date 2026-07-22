@@ -38,11 +38,13 @@ from .collectors.network import FirewallRuleSnapshot
 from .models import Finding, Severity
 
 DEFAULT_LOCATION = "us-central1"
-# Check https://cloud.google.com/vertex-ai/generative-ai/docs/models before
-# relying on this — Gemini model names/versions are updated by Google
-# independently of this project, and this couldn't be confirmed live from
-# the sandbox this was written in.
-DEFAULT_MODEL = "gemini-2.0-flash-001"
+# gemini-2.5-flash has been GA since June 2025 and is the stable default
+# here. Newer families (gemini-3.x) exist and move fast — check
+# https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models before
+# assuming this is still current; Gemini models are retired on their own
+# schedule independent of this project (e.g. gemini-2.0-flash-001, this
+# project's original default, was shut down June 1, 2026).
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 _JSON_SCHEMA_INSTRUCTIONS = """Respond with ONLY a JSON array (no prose, no markdown code fences). Each element must be an object with exactly these keys:
   "rule_id": a short UPPER_SNAKE_CASE identifier you choose, e.g. "IAM_PUBLIC_BINDING"
@@ -138,18 +140,23 @@ def detect(
     location: str = DEFAULT_LOCATION,
     model_name: str = DEFAULT_MODEL,
 ) -> list[Finding]:
-    """Calls Gemini via Vertex AI to identify compliance findings directly
-    from the live data — the model does the actual judgment call here, not
-    just the write-up. Requires the same setup as vertex_explainer.explain()
-    (Vertex AI API enabled, ADC configured, aiplatform access) — and, like
-    that function, has not been exercised against a live project from the
-    sandbox this was written in. Run scripts/live_smoke_test.py to confirm."""
-    import vertexai
-    from vertexai.generative_models import GenerativeModel
+    """Calls Gemini (via google-genai, targeting Vertex AI) to identify
+    compliance findings directly from the live data — the model does the
+    actual judgment call here, not just the write-up. Requires the same
+    setup as vertex_explainer.explain() (Vertex AI API enabled, ADC
+    configured, aiplatform access) — and, like that function, has not been
+    exercised against a live project from the sandbox this was written in.
+    Run scripts/live_smoke_test.py to confirm.
 
-    vertexai.init(project=project_id, location=location)
-    model = GenerativeModel(model_name)
+    Uses google-genai (`from google import genai`), not the older
+    `vertexai.generative_models` SDK — that module was deprecated by
+    Google on June 24, 2025 and removed June 24, 2026. See
+    vertex_explainer.py's module docstring for details.
+    """
+    from google import genai
+
+    client = genai.Client(vertexai=True, project=project_id, location=location)
 
     prompt = build_prompt(iam_snapshot, firewall_rules)
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(model=model_name, contents=prompt)
     return parse_response(response.text)

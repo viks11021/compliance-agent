@@ -72,9 +72,10 @@ def main():
             print(f"  [{f.severity.value}] {f.rule_id}: {f.message}")
     except Exception as exc:
         print(f"FAILED: {exc}")
-        print("Check: Vertex AI API enabled? Model name in ai_detector.py still valid? "
-              "Caller has aiplatform access? Did Gemini's response fail to parse as JSON "
-              "(see the ValueError text above)?")
+        print("Check: Vertex AI API enabled? Caller has aiplatform access? Is the model name in "
+              "ai_detector.py still live (Google retires Gemini model versions on their own "
+              "schedule — check https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models)? "
+              "Did Gemini's response fail to parse as JSON (see the ValueError text above)?")
         sys.exit(1)
 
     step("5. Narrative summary (vertex_explainer.py — used by --explain)")

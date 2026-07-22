@@ -1,24 +1,35 @@
-"""Sends findings to Gemini via the real Vertex AI SDK for a plain-English
-risk summary and remediation plan.
+"""Sends findings to Gemini for a plain-English risk summary and
+remediation plan.
 
-This deliberately uses `google-cloud-aiplatform` (Vertex AI), not the
-consumer Gemini API / API-key flow:
+Uses the **google-genai** SDK (`from google import genai`), Google's
+current unified client for Gemini — targeted at Vertex AI here via
+`genai.Client(vertexai=True, ...)`, which keeps the same auth/access
+model this project relies on:
 
-    Vertex AI                                  Gemini API (AI Studio)
+    Vertex AI mode (vertexai=True)             Gemini Developer API mode
     ------------------------------------------ -----------------------
     Auth: GCP project + ADC                    Auth: API key
     Access: IAM-controlled, audit-logged        Access: key-based only
     Fit: production GCP workloads               Fit: prototyping
 
-That match to the production auth/permissions model is the point of using
-Vertex AI here at all — see the top-level README for why.
+This project previously used `vertexai.generative_models.GenerativeModel`
+(the older `google-cloud-aiplatform` SDK surface). That module was
+deprecated by Google on June 24, 2025 and its removal date, June 24, 2026,
+has now passed — see
+https://cloud.google.com/vertex-ai/generative-ai/docs/deprecations/genai-vertexai-sdk
+This file was migrated to `google-genai` accordingly; if you're reading
+this in an interview and want to explain the change, that's the real
+reason, not a style preference.
 
-IMPORTANT: this call has not been exercised against a live GCP project from
-the environment this file was written in (no network path to
+IMPORTANT: this call has not been exercised against a live GCP project
+from the environment this file was written in (no network path to
 *.googleapis.com available there). The request shape matches Google's
-documented SDK usage as of this writing, but model names and SDK surface
-change — confirm the model name below is still current, and run this once
-against your own project, before using `--explain` in a demo or interview.
+current documented SDK usage as of this writing, but Gemini model names
+are retired on their own schedule independent of this project — confirm
+the model name below is still live (check
+https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models) and
+run this once against your own project before using it in a demo or
+interview.
 """
 
 from __future__ import annotations
@@ -26,10 +37,10 @@ from __future__ import annotations
 from .models import Finding
 
 DEFAULT_LOCATION = "us-central1"
-# Check https://cloud.google.com/vertex-ai/generative-ai/docs/models before
-# relying on this — Gemini model names/versions are updated by Google
-# independently of this project.
-DEFAULT_MODEL = "gemini-2.0-flash-001"
+# gemini-2.5-flash has been GA since June 2025 and is the stable default
+# here. Newer families (gemini-3.x) exist and move fast — check the models
+# page above before assuming this is still current.
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 def build_prompt(findings: list[Finding], project_id: str) -> str:
@@ -65,20 +76,19 @@ def explain(
     location: str = DEFAULT_LOCATION,
     model_name: str = DEFAULT_MODEL,
 ) -> str:
-    """Calls Gemini via Vertex AI and returns its plain-English summary.
+    """Calls Gemini (via google-genai, targeting Vertex AI) and returns its
+    plain-English summary.
 
     Requires:
-      - `pip install -e ".[ai]"` (installs google-cloud-aiplatform)
+      - `pip install -e ".[ai]"` (installs google-genai)
       - Application Default Credentials configured
       - The Vertex AI API enabled on `project_id`
       - `project_id` to have quota/access for the chosen model in `location`
     """
-    import vertexai
-    from vertexai.generative_models import GenerativeModel
+    from google import genai
 
-    vertexai.init(project=project_id, location=location)
-    model = GenerativeModel(model_name)
+    client = genai.Client(vertexai=True, project=project_id, location=location)
 
     prompt = build_prompt(findings, project_id)
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(model=model_name, contents=prompt)
     return response.text

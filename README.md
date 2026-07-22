@@ -34,11 +34,12 @@ want a deterministic check instead.
 **Neither the Gemini-based detection (`ai_detector.py`) nor the GCP
 collector calls have been executed against a live project from the
 environment this was built in** (no network path to `*.googleapis.com`
-there). The code is written against the documented SDK surface
-(`google-cloud-resource-manager`, `google-cloud-compute`,
-`google-cloud-aiplatform`), not mocked or faked — but SDK field names and
-Gemini model names do shift between versions, and the only way to be sure
-it works is to run it yourself:
+there). The code is written against Google's current documented SDK
+surface (`google-cloud-resource-manager`, `google-cloud-compute`,
+`google-genai`), not mocked or faked — but Gemini model names are retired
+on Google's own schedule (this project's first default,
+`gemini-2.0-flash-001`, was shut down June 1, 2026, mid-build), and the
+only way to be sure it works is to run it yourself:
 
 ```bash
 gcloud auth application-default login
@@ -49,12 +50,26 @@ python scripts/live_smoke_test.py
 ```
 
 That script checks each layer in order (ADC → IAM API → Compute API →
-Vertex AI) so a failure tells you exactly which one to fix. **Do this
-before relying on this in a demo or interview.** One spot already flagged
-as uncertain: `collectors/network.py`'s handling of the
-`Allowed.IPProtocol` field name, which has varied across
-`google-cloud-compute` versions — the smoke test script prints a warning if
-it can't resolve it.
+Gemini) so a failure tells you exactly which one to fix. **Do this before
+relying on this in a demo or interview.** Two things already flagged as
+uncertain: `collectors/network.py`'s handling of the `Allowed.IPProtocol`
+field name (varies across `google-cloud-compute` versions — the smoke test
+warns if it can't resolve it), and the Gemini model name in
+`ai_detector.py`/`vertex_explainer.py`, which Google updates independently
+of this project — check
+https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models if you
+hit a 404 on the model.
+
+**Note on the SDK itself**: this project uses `google-genai` (`from google
+import genai`, `genai.Client(vertexai=True, ...)`), Google's current
+unified client. It originally used the older
+`vertexai.generative_models.GenerativeModel` interface
+(`google-cloud-aiplatform`), which Google deprecated June 24, 2025 and
+removed June 24, 2026 — the migration happened during this project's
+development, triggered by a live run hitting the deprecation warning
+directly. See
+https://cloud.google.com/vertex-ai/generative-ai/docs/deprecations/genai-vertexai-sdk
+for Google's migration guide.
 
 The unit tests in `tests/` all use hand-built objects and mocked data —
 see `tests/README.md` for exactly what they do and don't prove.
@@ -117,6 +132,21 @@ list — the model can flag other patterns in the same data too. In
                                                        ▼ (optional, either mode)
                                         vertex_explainer.py (narrative summary)
 ```
+
+## Automation — running this on a schedule instead of by hand
+
+See [`deploy/terraform/README.md`](deploy/terraform/README.md) for the
+manual walkthrough, or
+[`deploy/github-actions-setup.md`](deploy/github-actions-setup.md) for
+deploying it through a CI/CD pipeline instead (recommended once you're past
+the first manual deploy — no local `terraform apply`, keyless GCP auth via
+Workload Identity Federation, plan-on-PR/apply-on-merge). Either way: Cloud
+Scheduler triggers a Cloud Run Job (containerized via the top-level
+`Dockerfile`) on a nightly cron, running as a dedicated least-privilege
+service account (no key files), with CRITICAL/HIGH findings posted to
+Slack via `--notify-slack`. The scan logic itself doesn't change — this
+just wraps the same CLI in infrastructure so nobody has to remember to run
+it.
 
 ## Required IAM permissions
 

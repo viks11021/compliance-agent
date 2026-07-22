@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 
 import click
@@ -27,7 +28,9 @@ def main():
 @click.option("--output", type=click.Path(dir_okay=False, writable=True), default=None, help="Write report to a file instead of stdout.")
 @click.option("--fail-on", type=click.Choice([s.value for s in SEVERITY_ORDER]), default=None,
               help="Exit non-zero if a finding at or above this severity is present (for CI).")
-def scan(project, rules_only, explain, location, fmt, output, fail_on):
+@click.option("--notify-slack", is_flag=True, default=False,
+              help="Post CRITICAL/HIGH findings to Slack. Requires SLACK_WEBHOOK_URL env var (read from Secret Manager in the Cloud Run deployment — see deploy/).")
+def scan(project, rules_only, explain, location, fmt, output, fail_on, notify_slack):
     """Run a live scan against a real GCP project.
 
     By default, Gemini (via Vertex AI) analyses the live IAM policy and
@@ -49,6 +52,19 @@ def scan(project, rules_only, explain, location, fmt, output, fail_on):
             fh.write(rendered + "\n")
     else:
         click.echo(rendered)
+
+    if notify_slack:
+        webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+        if not webhook_url:
+            click.echo("--notify-slack was set but SLACK_WEBHOOK_URL is not set; skipping notification.", err=True)
+        else:
+            from .notifiers import slack
+
+            try:
+                slack.send(webhook_url, result.project_id, result.findings, result.explanation)
+            except Exception as exc:
+                # Don't let a Slack outage fail the whole scan job — log and move on.
+                click.echo(f"Slack notification failed: {exc}", err=True)
 
     if fail_on:
         threshold = Severity(fail_on)

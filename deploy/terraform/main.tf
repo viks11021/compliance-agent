@@ -1,0 +1,176 @@
+# gcp-live-compliance-agent automation: Cloud Scheduler -> Cloud Run Job.
+#
+# NOT VALIDATED: `terraform validate` / `terraform plan` could not be run
+# against this from the sandbox this was written in — no `terraform`
+# binary and no network path to registry.terraform.io there. Written
+# carefully against the current `google` provider's documented resource
+# schemas, but run `terraform validate` yourself before `apply`. Same
+# category of caveat as the Python API calls elsewhere in this repo — see
+# the top-level README's "Known limitations".
+
+locals {
+  job_name = "compliance-agent-scan"
+}
+
+# --- APIs ---------------------------------------------------------------
+
+resource "google_project_service" "required" {
+  for_each = toset([
+    "run.googleapis.com",
+    "cloudscheduler.googleapis.com",
+    "secretmanager.googleapis.com",
+    "aiplatform.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "compute.googleapis.com",
+    "artifactregistry.googleapis.com",
+  ])
+  service            = each.value
+  disable_on_destroy = false
+}
+
+# --- Artifact Registry (holds the container image) ----------------------
+
+resource "google_artifact_registry_repository" "scanner" {
+  location      = var.region
+  repository_id = "compliance-agent"
+  format        = "DOCKER"
+  description   = "Container images for gcp-live-compliance-agent"
+
+  depends_on = [google_project_service.required]
+}
+
+# --- Runtime service account (attached to the Cloud Run Job) ------------
+# Least privilege: read-only on the project being scanned, plus Vertex AI
+# user for Gemini. No key file is ever created — Cloud Run attaches this
+# identity directly, so there's no long-lived credential to leak.
+
+resource "google_service_account" "scanner" {
+  account_id   = "compliance-agent-scanner"
+  display_name = "gcp-live-compliance-agent runtime identity"
+}
+
+resource "google_project_iam_member" "scanner_viewer" {
+  project = var.project_id
+  role    = "roles/viewer"
+  member  = "serviceAccount:${google_service_account.scanner.email}"
+}
+
+resource "google_project_iam_member" "scanner_vertex_ai" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.scanner.email}"
+}
+
+# --- Slack webhook secret -------------------------------------------------
+# Always created, even if slack_webhook_url is left as "" — this avoids
+# conditionally-created resources and a dynamic env block on
+# google_cloud_run_v2_job, which doesn't reliably support `dynamic` block
+# generation regardless of collection type (a real quirk hit while
+# deploying this, not a hypothetical). An empty secret value means the
+# scanner's SLACK_WEBHOOK_URL env var is empty at runtime, and the CLI's
+# --notify-slack already treats an empty value as "not configured" and
+# skips notification rather than erroring.
+
+resource "google_secret_manager_secret" "slack_webhook" {
+  secret_id = "compliance-agent-slack-webhook"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_version" "slack_webhook" {
+  secret      = google_secret_manager_secret.slack_webhook.id
+  secret_data = var.slack_webhook_url
+}
+
+resource "google_secret_manager_secret_iam_member" "scanner_secret_access" {
+  secret_id = google_secret_manager_secret.slack_webhook.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.scanner.email}"
+}
+
+# --- Cloud Run Job --------------------------------------------------------
+# A Job (not a Service) — this runs to completion on a trigger, it doesn't
+# serve HTTP traffic. That's the correct Cloud Run primitive for a
+# scheduled batch/CLI task like a compliance scan.
+
+resource "google_cloud_run_v2_job" "scanner" {
+  name                = local.job_name
+  location            = var.region
+  deletion_protection = false
+
+  template {
+    template {
+      service_account = google_service_account.scanner.email
+      timeout         = "600s" # Gemini calls + two GCP API calls should comfortably fit; raise if you add more collectors
+
+      containers {
+        image = var.image
+
+        env {
+          name  = "GOOGLE_CLOUD_PROJECT"
+          value = var.project_id
+        }
+
+        env {
+          name = "SLACK_WEBHOOK_URL"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.slack_webhook.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    google_project_service.required,
+    google_project_iam_member.scanner_viewer,
+    google_project_iam_member.scanner_vertex_ai,
+  ]
+}
+
+# --- Scheduler invoker identity -------------------------------------------
+# Separate from the scanner's own runtime identity, on purpose: this SA's
+# only job is "permission to press the run button" (roles/run.invoker),
+# not permission to read the project it's scanning.
+
+resource "google_service_account" "scheduler_invoker" {
+  account_id   = "compliance-agent-invoker"
+  display_name = "Cloud Scheduler -> Cloud Run Job invoker for gcp-live-compliance-agent"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "scheduler_can_invoke" {
+  name     = google_cloud_run_v2_job.scanner.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.scheduler_invoker.email}"
+}
+
+# --- Scheduler trigger -----------------------------------------------------
+
+resource "google_cloud_scheduler_job" "nightly_scan" {
+  name      = "compliance-agent-nightly-scan"
+  region    = var.region
+  schedule  = var.schedule_cron
+  time_zone = var.time_zone
+
+  http_target {
+    http_method = "POST"
+    uri         = "https://${var.region}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${var.project_id}/jobs/${local.job_name}:run"
+
+    oauth_token {
+      service_account_email = google_service_account.scheduler_invoker.email
+    }
+  }
+
+  depends_on = [
+    google_project_service.required,
+    google_cloud_run_v2_job_iam_member.scheduler_can_invoke,
+  ]
+}

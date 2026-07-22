@@ -10,3 +10,5 @@ build/
 venv/
 *.json.report
 report.json
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate*
